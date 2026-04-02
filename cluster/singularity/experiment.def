@@ -1,0 +1,25 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:24.07-py3
+
+%labels
+    Author jan
+    Description CER experiment container
+
+%post
+    apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        && rm -rf /var/lib/apt/lists/*
+
+    pip install --no-cache-dir \
+        wandb \
+        pyyaml \
+        scipy \
+        matplotlib \
+        tqdm
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+
+%runscript
+    exec python "$@"

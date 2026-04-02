@@ -1,0 +1,24 @@
+#!/bin/bash
+# Reference sbatch template — not used directly by CER (generated inline by Python).
+# Kept here for documentation and manual debugging.
+
+#SBATCH --job-name=cer-{{commit_short}}
+#SBATCH --partition={{partition}}
+#SBATCH --gres={{gres}}
+#SBATCH --cpus-per-task={{cpus_per_task}}
+#SBATCH --mem={{mem}}
+#SBATCH --time={{time}}
+#SBATCH --output={{log_dir}}/%j.out
+#SBATCH --error={{log_dir}}/%j.err
+
+export WANDB_PROJECT="{{wandb_project}}"
+export WANDB_ENTITY="{{wandb_entity}}"
+export WANDB_RUN_NAME="cer-{{commit_short}}"
+export WANDB_TAGS="{{commit_hash}}"
+export CER_COMMIT="{{commit_hash}}"
+export CER_CONFIG='{{config_json}}'
+
+cd "{{worktree_dir}}"
+
+singularity exec --nv {{bind_flags}} {{container_image}} \
+    bash -c 'pip install -q -r requirements.txt 2>/dev/null; {{entrypoint}} {{config_cli_args}}'
