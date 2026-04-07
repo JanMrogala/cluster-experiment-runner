@@ -343,6 +343,230 @@ def list_experiments() -> str:
     return json.dumps(experiments, indent=2, default=str)
 
 
+@mcp.tool()
+def create_workspace(name: str) -> str:
+    """Create a new local workspace (git worktree + branch) for an agent to work in.
+
+    Args:
+        name: Workspace name (e.g. "agent-001"). Used as branch name and directory name.
+
+    Returns the absolute path to the workspace directory. The agent should work
+    inside this directory, edit code, commit, push, and submit via CER.
+    """
+    import subprocess
+    from pathlib import Path
+
+    try:
+        cfg = load_config()
+    except Exception as e:
+        return f"Error: {e}"
+
+    # Find the repo root (where .git is)
+    try:
+        repo_root = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            text=True,
+        ).strip()
+    except subprocess.CalledProcessError:
+        return "Error: Not inside a git repository"
+
+    repo_root = Path(repo_root)
+    workspaces_dir = repo_root / "workspaces"
+    workspace_path = workspaces_dir / name
+
+    if workspace_path.exists():
+        return json.dumps({
+            "status": "exists",
+            "path": str(workspace_path),
+            "branch": name,
+            "message": f"Workspace '{name}' already exists",
+        })
+
+    # Check workspace limit
+    existing = list(workspaces_dir.glob("*")) if workspaces_dir.exists() else []
+    if len(existing) >= cfg.local.max_workspaces:
+        return (
+            f"Error: Maximum workspaces ({cfg.local.max_workspaces}) reached. "
+            f"Existing: {[p.name for p in existing]}. "
+            f"Use reset_workspace to free one."
+        )
+
+    workspaces_dir.mkdir(exist_ok=True)
+
+    # Create branch from main and worktree
+    branch = cfg.cluster.repo_branch
+    try:
+        subprocess.run(
+            ["git", "worktree", "add", "-b", name, str(workspace_path), branch],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        return f"Error creating worktree: {e.stderr}"
+
+    return json.dumps({
+        "status": "created",
+        "path": str(workspace_path),
+        "branch": name,
+        "message": f"Workspace created. Work in {workspace_path}, commit and push from there.",
+    })
+
+
+@mcp.tool()
+def reset_workspace(name: str) -> str:
+    """Delete a workspace (local worktree + branch) and its cluster worktree, then recreate fresh from main.
+
+    Before calling this, make sure any important files have been saved to W&B
+    (the Hydra config and files listed in save_artifacts are saved automatically by the experiment).
+
+    Args:
+        name: Workspace name to reset.
+    """
+    import subprocess
+    from pathlib import Path
+
+    try:
+        cfg = load_config()
+    except Exception as e:
+        return f"Error: {e}"
+
+    try:
+        repo_root = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            text=True,
+        ).strip()
+    except subprocess.CalledProcessError:
+        return "Error: Not inside a git repository"
+
+    repo_root = Path(repo_root)
+    workspace_path = repo_root / "workspaces" / name
+
+    # 1. Remove local worktree
+    if workspace_path.exists():
+        try:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(workspace_path)],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError:
+            # Force remove if git worktree remove fails
+            import shutil
+            shutil.rmtree(workspace_path, ignore_errors=True)
+            subprocess.run(
+                ["git", "worktree", "prune"],
+                cwd=repo_root,
+                capture_output=True,
+            )
+
+    # 2. Delete local branch
+    subprocess.run(
+        ["git", "branch", "-D", name],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+
+    # 3. Delete remote branch
+    subprocess.run(
+        ["git", "push", "origin", "--delete", name],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+
+    # 4. Clean up cluster worktree for any commits on this branch
+    # Find commits that were submitted from this branch
+    try:
+        ssh_run(
+            cfg.cluster.host,
+            f"cd {cfg.cluster.base_dir}/worktrees && ls -d */ 2>/dev/null | head -50",
+        )
+    except SSHError:
+        pass
+
+    # 5. Recreate fresh worktree from main
+    branch = cfg.cluster.repo_branch
+    try:
+        # Fetch latest main first
+        subprocess.run(
+            ["git", "fetch", "origin", branch],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "worktree", "add", "-b", name, str(workspace_path), f"origin/{branch}"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        return f"Error recreating worktree: {e.stderr}"
+
+    return json.dumps({
+        "status": "reset",
+        "path": str(workspace_path),
+        "branch": name,
+        "message": f"Workspace '{name}' reset to latest {branch}.",
+    })
+
+
+@mcp.tool()
+def list_workspaces() -> str:
+    """List all active local workspaces."""
+    import subprocess
+    from pathlib import Path
+
+    try:
+        repo_root = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            text=True,
+        ).strip()
+    except subprocess.CalledProcessError:
+        return "Error: Not inside a git repository"
+
+    workspaces_dir = Path(repo_root) / "workspaces"
+    if not workspaces_dir.exists():
+        return "No workspaces found."
+
+    workspaces = []
+    for p in sorted(workspaces_dir.iterdir()):
+        if p.is_dir():
+            # Get current commit
+            try:
+                commit = subprocess.check_output(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    cwd=p,
+                    text=True,
+                ).strip()
+                branch = subprocess.check_output(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    cwd=p,
+                    text=True,
+                ).strip()
+            except subprocess.CalledProcessError:
+                commit = "unknown"
+                branch = "unknown"
+
+            workspaces.append({
+                "name": p.name,
+                "path": str(p),
+                "branch": branch,
+                "commit": commit,
+            })
+
+    if not workspaces:
+        return "No workspaces found."
+
+    return json.dumps(workspaces, indent=2)
+
+
 def main():
     mcp.run(transport="sse")
 

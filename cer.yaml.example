@@ -25,3 +25,4 @@ experiment:
 
 local:
   db_path: "~/.local/share/cer/experiments.db"
+  max_workspaces: 10                          # Max parallel agent workspaces

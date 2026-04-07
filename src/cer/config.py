@@ -46,6 +46,7 @@ class ExperimentConfig:
 @dataclass
 class LocalConfig:
     db_path: str = "~/.local/share/cer/experiments.db"
+    max_workspaces: int = 10
 
 
 @dataclass
