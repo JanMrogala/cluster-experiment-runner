@@ -13,9 +13,11 @@ def test_load_config(config_file):
     assert cfg.container.image == "/tmp/test.sif"
 
 
-def test_load_config_missing_file(tmp_path):
+def test_load_config_missing_file(tmp_path, monkeypatch):
     old_cwd = os.getcwd()
     os.chdir(tmp_path)
+    # Point HOME to tmp_path so ~/.config/cer/cer.yaml isn't found
+    monkeypatch.setenv("HOME", str(tmp_path))
     try:
         with pytest.raises(ConfigError, match="No cer.yaml found"):
             load_config()

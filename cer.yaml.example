@@ -21,6 +21,7 @@ experiment:
   entrypoint: "python train.py"               # Command run inside container
   wandb_project: "my-project"
   wandb_entity: ""                            # Optional W&B entity/team
+  wandb_api_key: ""                           # W&B API key (from https://wandb.ai/authorize)
 
 local:
   db_path: "~/.local/share/cer/experiments.db"

@@ -40,6 +40,7 @@ class ExperimentConfig:
     entrypoint: str = "python train.py"
     wandb_project: str = ""
     wandb_entity: str = ""
+    wandb_api_key: str = ""
 
 
 @dataclass
@@ -112,8 +113,7 @@ def load_config() -> CERConfig:
         raise ConfigError("cluster.base_dir is required")
     if not cluster.repo_url:
         raise ConfigError("cluster.repo_url is required")
-    if not container.image:
-        raise ConfigError("container.image is required")
+    # container.image is optional — if empty, experiments run without Singularity
 
     # Expand ~ in paths
     local.db_path = str(Path(local.db_path).expanduser())

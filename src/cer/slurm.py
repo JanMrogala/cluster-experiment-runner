@@ -41,9 +41,11 @@ def parse_job_status(stdout: str) -> str | None:
 
 def build_status_command(job_id: str) -> str:
     """SSH command to check job status. Tries squeue first, falls back to sacct."""
+    # squeue succeeds with empty output for completed jobs, so use bash to check
     return (
-        f"squeue -j {job_id} -h -o '%T' 2>/dev/null || "
-        f"sacct -j {job_id} -n -o State -X 2>/dev/null"
+        f'STATUS=$(squeue -j {job_id} -h -o "%T" 2>/dev/null); '
+        f'if [ -n "$STATUS" ]; then echo "$STATUS"; '
+        f"else sacct -j {job_id} -n -o State -X 2>/dev/null; fi"
     )
 
 
