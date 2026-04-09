@@ -140,11 +140,11 @@ class TestMCPOverNetwork:
 
     @patch("cer.mcp_server.ssh_run_script")
     @patch("cer.mcp_server.ssh_run")
-    def test_full_workflow_over_sse(self, mock_ssh, mock_script):
+    def test_full_workflow_over_http(self, mock_ssh, mock_script):
         """Simulate what the agent does: connect to MCP server, list tools, call them."""
         import asyncio
         from mcp.client.session import ClientSession
-        from mcp.client.sse import sse_client
+        from mcp.client.streamable_http import streamablehttp_client
 
         mock_script.return_value = SSHResult(0, "Submitted batch job 77777", "")
         mock_ssh.return_value = SSHResult(0, "77777 RUNNING", "")
@@ -154,23 +154,23 @@ class TestMCPOverNetwork:
             import uvicorn
             from cer.mcp_server import mcp as mcp_app
 
-            server_app = mcp_app.sse_app()
+            server_app = mcp_app.streamable_http_app()
             config = uvicorn.Config(server_app, host="127.0.0.1", port=18932, log_level="error")
             server = uvicorn.Server(config)
             server_task = asyncio.create_task(server.serve())
 
             # Wait for server to be ready
-            import aiohttp
+            import httpx
             for _ in range(50):
                 try:
-                    async with aiohttp.ClientSession() as s:
-                        async with s.get("http://127.0.0.1:18932/sse"):
-                            break
-                except (aiohttp.ClientError, ConnectionError):
+                    async with httpx.AsyncClient() as client:
+                        await client.get("http://127.0.0.1:18932/mcp")
+                        break
+                except (httpx.ConnectError, ConnectionError):
                     await asyncio.sleep(0.1)
 
             try:
-                async with sse_client("http://127.0.0.1:18932/sse") as (read, write):
+                async with streamablehttp_client("http://127.0.0.1:18932/mcp") as (read, write, _):
                     async with ClientSession(read, write) as session:
                         await session.initialize()
 

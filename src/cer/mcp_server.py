@@ -345,7 +345,7 @@ def list_experiments() -> str:
 
 
 def main():
-    mcp.run(transport="sse")
+    mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":
