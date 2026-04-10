@@ -11,6 +11,7 @@ dependencies = [
     "pyyaml>=6.0",
     "wandb>=0.15.0",
     "mcp>=1.0.0",
+    "keyring>=25.0",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +22,7 @@ dev = [
 
 [project.scripts]
 cer-mcp = "cer.mcp_server:main"
+cer-secret = "cer.secrets:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cer"]

@@ -25,7 +25,9 @@ def mock_env(tmp_path):
         },
         "slurm": {
             "partition": "gpu",
-            "gres": "gpu:1",
+            "nodes": 1,
+            "ntasks": 1,
+            "gpus": 1,
             "cpus_per_task": 4,
             "mem": "16G",
             "time": "01:00:00",

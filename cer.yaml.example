@@ -1,27 +1,30 @@
 cluster:
   host: "hostname"                           # SSH host (matches ~/.ssh/config)
-  base_dir: "/scratch/project_xxx/user/experiments"  # Root directory on LUMI
+  base_dir: "/scratch/project_465002631/user/experiments"  # Root directory on LUMI
   repo_url: "git@github.com:user/repo.git"      # GitHub repo SSH URL
   repo_branch: "main"                           # Branch to fetch
 
 container:
-  image: "/scratch/project_xxx/user/containers/experiment.sif"  # Singularity .sif on LUMI
+  image: "/scratch/project_465002631/user/containers/experiment.sif"  # Singularity .sif on LUMI
   bind_mounts:                                   # Extra --bind mounts
-    - "/scratch/project_xxx/user/data:/data"
+    - "/scratch/project_465002631/user/data:/data"
 
 slurm:
-  partition: "gpu"
-  gres: "gpu:1"
+  partition: "small-g"                          # small-g, standard-g, dev-g, etc.
+  nodes: 1
+  ntasks: 1
+  gpus: 1
   cpus_per_task: 8
-  mem: "32G"
+  mem: "64GB"
   time: "24:00:00"
-  extra_flags: []                             # Additional #SBATCH flags, e.g. ["--exclusive"]
+  account: "project_465001424"                  # LUMI billing account
+  extra_flags: []                               # Additional #SBATCH flags, e.g. ["--array=1-24"]
 
 experiment:
   entrypoint: "python train.py"               # Command run inside container
   wandb_project: "my-project"
   wandb_entity: ""                            # Optional W&B entity/team
-  wandb_api_key: ""                           # W&B API key (from https://wandb.ai/authorize)
+  wandb_api_key: "keyring"                     # Fetched from system keyring. Store with: cer-secret set wandb_api_key <key>
 
 local:
   db_path: "~/.local/share/cer/experiments.db"

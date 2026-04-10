@@ -4,7 +4,10 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import keyring
 import yaml
+
+KEYRING_SERVICE = "cer"
 
 
 class ConfigError(Exception):
@@ -27,11 +30,14 @@ class ContainerConfig:
 
 @dataclass
 class SlurmConfig:
-    partition: str = "gpu"
-    gres: str = "gpu:1"
+    partition: str = "small-g"
+    nodes: int = 1
+    ntasks: int = 1
+    gpus: int = 1
     cpus_per_task: int = 8
-    mem: str = "32G"
+    mem: str = "64GB"
     time: str = "24:00:00"
+    account: str = ""
     extra_flags: list[str] = field(default_factory=list)
 
 
@@ -87,6 +93,40 @@ def _env_override(data: dict, prefix: str = "CER") -> dict:
     return data
 
 
+SECRET_FIELDS = {"experiment.wandb_api_key"}
+
+
+def _resolve_secret(section: str, key: str, value: str) -> str:
+    """Resolve a config value that may be stored in the system keyring.
+
+    If the value is empty or the literal string "keyring", look it up
+    from the system keyring (GNOME Keyring / KDE Wallet / macOS Keychain).
+    """
+    field_name = f"{section}.{key}"
+    if field_name not in SECRET_FIELDS:
+        return value
+    if value and value != "keyring":
+        return value
+    secret = keyring.get_password(KEYRING_SERVICE, key)
+    if secret is None:
+        raise ConfigError(
+            f"{field_name} not found in config or system keyring.\n"
+            f"Store it with:  cer-secret set {key} <value>"
+        )
+    return secret
+
+
+def _resolve_secrets(raw: dict) -> dict:
+    """Walk config and resolve any secret fields via keyring."""
+    for section_name, section in raw.items():
+        if not isinstance(section, dict):
+            continue
+        for key, value in section.items():
+            if isinstance(value, str):
+                section[key] = _resolve_secret(section_name, key, value)
+    return raw
+
+
 def load_config() -> CERConfig:
     path = _find_config_file()
     with open(path) as f:
@@ -96,6 +136,7 @@ def load_config() -> CERConfig:
         raise ConfigError(f"Invalid config file: {path}")
 
     raw = _env_override(raw)
+    raw = _resolve_secrets(raw)
 
     try:
         cluster = ClusterConfig(**raw.get("cluster", {}))

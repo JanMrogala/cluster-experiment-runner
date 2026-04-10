@@ -31,16 +31,20 @@ def sample_config_dict():
         },
         "slurm": {
             "partition": "gpu",
-            "gres": "gpu:1",
+            "nodes": 1,
+            "ntasks": 1,
+            "gpus": 1,
             "cpus_per_task": 4,
             "mem": "16G",
             "time": "01:00:00",
+            "account": "",
             "extra_flags": [],
         },
         "experiment": {
             "entrypoint": "python train.py",
             "wandb_project": "test-project",
             "wandb_entity": "",
+            "wandb_api_key": "fake-test-key",
         },
         "local": {
             "db_path": "~/.local/share/cer/test.db",

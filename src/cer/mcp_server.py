@@ -58,15 +58,19 @@ def _build_submit_script(cfg: CERConfig, commit: str) -> str:
     extra_sbatch = "\n".join(f"#SBATCH {f}" for f in cfg.slurm.extra_flags)
     bind_flags = " ".join(f"--bind {m}" for m in cfg.container.bind_mounts)
 
+    account_line = f"\n#SBATCH --account={cfg.slurm.account}" if cfg.slurm.account else ""
+
     sbatch_content = f"""#!/bin/bash
 #SBATCH --job-name=cer-{commit_short}
 #SBATCH --partition={cfg.slurm.partition}
-#SBATCH --gres={cfg.slurm.gres}
+#SBATCH --nodes={cfg.slurm.nodes}
+#SBATCH --ntasks={cfg.slurm.ntasks}
+#SBATCH --gpus={cfg.slurm.gpus}
 #SBATCH --cpus-per-task={cfg.slurm.cpus_per_task}
 #SBATCH --mem={cfg.slurm.mem}
 #SBATCH --time={cfg.slurm.time}
 #SBATCH --output={log_dir}/%j.out
-#SBATCH --error={log_dir}/%j.err
+#SBATCH --error={log_dir}/%j.err{account_line}
 {extra_sbatch}
 
 export WANDB_API_KEY="{cfg.experiment.wandb_api_key}"
