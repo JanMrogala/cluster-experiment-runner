@@ -66,11 +66,12 @@ export WANDB_RUN_NAME="cer-{commit_short}"
 export WANDB_TAGS="{commit}"
 export CER_COMMIT="{commit}"
 
-# Clone repo on the host (has SSH keys), checkout exact commit
+# Clone repo and checkout exact commit
 WORK=$(mktemp -d)
 trap "rm -rf $WORK" EXIT
-git clone --single-branch --branch {cfg.cluster.repo_branch} {cfg.cluster.repo_url} "$WORK"
+git clone {cfg.cluster.repo_url} "$WORK"
 cd "$WORK"
+git fetch origin '+refs/heads/*:refs/remotes/origin/*'
 git checkout {commit}
 
 # Run experiment inside Singularity container
