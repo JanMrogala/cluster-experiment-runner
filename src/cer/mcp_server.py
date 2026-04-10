@@ -44,17 +44,6 @@ def _build_submit_script(cfg: CERConfig, commit: str) -> str:
     bind_flags = " ".join(f"--bind {m}" for m in cfg.container.bind_mounts)
     account_line = f"\n#SBATCH --account={cfg.slurm.account}" if cfg.slurm.account else ""
 
-    # The inner script runs inside Singularity: clone, checkout, install deps, run
-    inner_script = (
-        f"set -euo pipefail\\n"
-        f"WORK=$(mktemp -d)\\n"
-        f"git clone --single-branch --branch {cfg.cluster.repo_branch} {cfg.cluster.repo_url} \\$WORK\\n"
-        f"cd \\$WORK\\n"
-        f"git checkout {commit}\\n"
-        f"pip install -q -r requirements.txt 2>/dev/null || true\\n"
-        f"{cfg.experiment.entrypoint}\\n"
-    )
-
     sbatch_content = f"""#!/bin/bash
 #SBATCH --job-name=cer-{commit_short}
 #SBATCH --partition={cfg.slurm.partition}
@@ -68,6 +57,8 @@ def _build_submit_script(cfg: CERConfig, commit: str) -> str:
 #SBATCH --error={log_dir}/%j.err{account_line}
 {extra_sbatch}
 
+set -euo pipefail
+
 export WANDB_API_KEY="{cfg.experiment.wandb_api_key}"
 export WANDB_PROJECT="{cfg.experiment.wandb_project}"
 export WANDB_ENTITY="{cfg.experiment.wandb_entity}"
@@ -75,12 +66,22 @@ export WANDB_RUN_NAME="cer-{commit_short}"
 export WANDB_TAGS="{commit}"
 export CER_COMMIT="{commit}"
 
+# Clone repo on the host (has SSH keys), checkout exact commit
+WORK=$(mktemp -d)
+trap "rm -rf $WORK" EXIT
+git clone --single-branch --branch {cfg.cluster.repo_branch} {cfg.cluster.repo_url} "$WORK"
+cd "$WORK"
+git checkout {commit}
+
+# Run experiment inside Singularity container
 singularity exec \\
     --nv \\
     --writable-tmpfs \\
+    --bind "$WORK":"$WORK" \\
     {bind_flags} \\
+    --pwd "$WORK" \\
     {cfg.container.image} \\
-    bash -c "$(echo -e '{inner_script}')"
+    bash -c 'pip install -q -r requirements.txt 2>/dev/null || true; {cfg.experiment.entrypoint}'
 """
 
     return f"""set -euo pipefail
