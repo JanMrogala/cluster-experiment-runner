@@ -136,6 +136,75 @@ class TestMCPTools:
         result = submit(COMMIT)
         assert "failed" in result.lower()
 
+    @patch("cer.mcp_server.ssh_run")
+    @patch("cer.mcp_server.ssh_run_script")
+    def test_status_failed_fetches_error_log(self, mock_script, mock_ssh):
+        """When a job is FAILED, status should fetch the SLURM err log tail."""
+        from cer.mcp_server import status, submit
+
+        mock_script.return_value = SSHResult(0, "Submitted batch job 12345", "")
+        submit(COMMIT)
+
+        # Three SSH calls happen for a FAILED job:
+        #   1. squeue/sacct status check       -> "FAILED"
+        #   2. tail of *.err log               -> traceback
+        # (the wandb_url grep is skipped because status != RUNNING/COMPLETED)
+        mock_ssh.side_effect = [
+            SSHResult(0, "FAILED", ""),
+            SSHResult(0, "Traceback (most recent call last):\nRuntimeError: boom", ""),
+        ]
+        result = status("12345")
+        data = json.loads(result)
+        assert data["status"] == "FAILED"
+        assert "RuntimeError: boom" in data["error_message"]
+
+    @patch("cer.mcp_server.ssh_run")
+    @patch("cer.mcp_server.ssh_run_script")
+    def test_status_strips_ansi_from_wandb_url(self, mock_script, mock_ssh):
+        from cer.mcp_server import status, submit
+
+        mock_script.return_value = SSHResult(0, "Submitted batch job 12345", "")
+        submit(COMMIT)
+
+        mock_ssh.side_effect = [
+            SSHResult(0, "RUNNING", ""),
+            SSHResult(0, "https://wandb.ai/team/proj/runs/abc123\x1b[0m", ""),
+        ]
+        result = status("12345")
+        data = json.loads(result)
+        assert data["wandb_url"] == "https://wandb.ai/team/proj/runs/abc123"
+        assert "\x1b" not in data["wandb_url"]
+
+    @patch("cer.mcp_server.ssh_run")
+    @patch("cer.mcp_server.ssh_run_script")
+    def test_logs_tool(self, mock_script, mock_ssh):
+        from cer.mcp_server import logs, submit
+
+        mock_script.return_value = SSHResult(0, "Submitted batch job 12345", "")
+        submit(COMMIT)
+
+        mock_ssh.side_effect = [
+            SSHResult(0, "stdout line 1\nstdout line 2", ""),
+            SSHResult(0, "stderr line 1", ""),
+        ]
+        result = logs("12345")
+        data = json.loads(result)
+        assert data["job_id"] == "12345"
+        assert "stdout line 2" in data["stdout"]
+        assert "stderr line 1" in data["stderr"]
+
+    def test_logs_unknown_job(self):
+        from cer.mcp_server import logs
+
+        result = logs("99999")
+        assert "not found" in result
+
+    def test_logs_invalid_stream(self):
+        from cer.mcp_server import logs
+
+        result = logs("99999", stream="bogus")
+        assert "Error" in result and "stream" in result
+
 
 class TestMCPOverNetwork:
     """Test the actual MCP server over HTTP using the MCP client SDK."""

@@ -39,6 +39,38 @@ def find_run(project: str, commit_hash: str, entity: str = "", api_key: str = ""
     return runs_list[0]
 
 
+def _extract_config(run: wandb.apis.public.Run) -> dict:
+    """Extract the run config as a plain dict.
+
+    The wandb public API exposes `run.config` as a dict-like object whose
+    representation can vary across wandb versions. Try the most reliable
+    paths first and fall back to a manual copy.
+    """
+    cfg = run.config
+    # Newer wandb versions expose `as_dict()`.
+    as_dict = getattr(cfg, "as_dict", None)
+    if callable(as_dict):
+        try:
+            return dict(as_dict())
+        except Exception:
+            pass
+    # `dict(cfg)` works when cfg implements `keys()` (most wandb versions).
+    try:
+        out = dict(cfg)
+        if out:
+            return out
+    except Exception:
+        pass
+    # Last resort: iterate items().
+    items = getattr(cfg, "items", None)
+    if callable(items):
+        try:
+            return {k: v for k, v in items()}
+        except Exception:
+            pass
+    return {}
+
+
 def get_run_summary(run: wandb.apis.public.Run) -> dict:
     """Extract key information from a W&B run."""
     return {
@@ -46,7 +78,7 @@ def get_run_summary(run: wandb.apis.public.Run) -> dict:
         "run_name": run.name,
         "url": run.url,
         "state": run.state,
-        "config": dict(run.config),
+        "config": _extract_config(run),
         "summary": {k: v for k, v in run.summary.items() if not k.startswith("_")},
         "tags": list(run.tags),
         "created_at": run.created_at,
@@ -56,10 +88,27 @@ def get_run_summary(run: wandb.apis.public.Run) -> dict:
 def get_run_history(run: wandb.apis.public.Run, keys: list[str] | None = None) -> list[dict]:
     """Get the full metric history for a run.
 
+    Uses `run.scan_history` which streams every logged step. Unlike
+    `run.history(keys=...)`, scan_history returns each individual logged
+    event rather than only rows where every requested key is present —
+    important for frameworks like PyTorch Lightning that log train and
+    val metrics on different steps.
+
     Args:
-        run: W&B run object
+        run: W&B run object.
         keys: Optional list of metric keys to fetch. If None, fetches all.
     """
-    df = run.history(keys=keys) if keys else run.history()
-    # history() returns a pandas DataFrame
-    return df.to_dict("records")
+    if keys:
+        rows = list(run.scan_history(keys=keys))
+        if rows:
+            return rows
+        # Some wandb backends return nothing from scan_history when keys
+        # are passed (e.g. if a key was never logged). Fall back to a full
+        # scan and filter client-side so the caller still gets data.
+        wanted = set(keys)
+        return [
+            {k: v for k, v in row.items() if k in wanted or k == "_step"}
+            for row in run.scan_history()
+            if any(k in row for k in wanted)
+        ]
+    return list(run.scan_history())

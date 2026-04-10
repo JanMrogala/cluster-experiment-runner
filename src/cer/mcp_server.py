@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 
 from mcp.server.fastmcp import FastMCP
 
@@ -20,6 +21,34 @@ from cer.slurm import (
 from cer.ssh import SSHError, ssh_run, ssh_run_script
 
 mcp = FastMCP("cer", instructions="Cluster Experiment Runner — submit, monitor, and query GPU experiments on a SLURM cluster.")
+
+# Matches ANSI CSI escape sequences (e.g. color codes like \x1b[0m).
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub("", s)
+
+
+def _log_paths(cfg: CERConfig, job_id: str) -> tuple[str, str]:
+    base = f"{cfg.cluster.base_dir}/logs/{job_id}"
+    return f"{base}.out", f"{base}.err"
+
+
+def _fetch_log_tail(cfg: CERConfig, job_id: str, stream: str, tail: int) -> str | None:
+    """Fetch the last `tail` lines of a SLURM log. Returns None if file missing or SSH fails."""
+    out_path, err_path = _log_paths(cfg, job_id)
+    path = err_path if stream == "err" else out_path
+    try:
+        result = ssh_run(
+            cfg.cluster.host,
+            f"tail -n {int(tail)} {shlex.quote(path)} 2>/dev/null",
+        )
+    except SSHError:
+        return None
+    if not result.ok or not result.stdout:
+        return None
+    return _strip_ansi(result.stdout).strip() or None
 
 
 def _load() -> tuple[CERConfig, Database]:
@@ -149,6 +178,8 @@ def status(job_id: str) -> str:
     """Check the SLURM status of an experiment by job ID.
 
     Returns job status, commit info, and W&B URL if available.
+    If the job has FAILED, the tail of the SLURM error log is fetched
+    and surfaced as `error_message`.
     """
     try:
         cfg, db = _load()
@@ -175,15 +206,29 @@ def status(job_id: str) -> str:
                 log_path = f"{cfg.cluster.base_dir}/logs/{job_id}.out"
                 wandb_result = ssh_run(
                     cfg.cluster.host,
-                    f"grep -o 'https://wandb.ai/[^ ]*' {log_path} 2>/dev/null | tail -1",
+                    f"grep -aoE 'https://wandb\\.ai/[^[:space:]]+' {log_path} 2>/dev/null | tail -1",
                 )
                 if wandb_result.ok and wandb_result.stdout:
-                    url = wandb_result.stdout.strip()
-                    run_id = url.rstrip("/").split("/")[-1]
-                    db.update_wandb(job_id, run_id, url)
-                    exp["wandb_url"] = url
+                    url = _strip_ansi(wandb_result.stdout).strip()
+                    # Trim any trailing punctuation that may have been captured.
+                    url = url.rstrip(".,;:)\"'")
+                    if url:
+                        run_id = url.rstrip("/").split("/")[-1]
+                        db.update_wandb(job_id, run_id, url)
+                        exp["wandb_url"] = url
+                        exp["wandb_run_id"] = run_id
             except SSHError:
                 pass
+
+        # If the job failed, fetch the tail of the error log and persist it.
+        if exp["status"] in ("FAILED", "TIMEOUT") and not exp.get("error_message"):
+            err_tail = _fetch_log_tail(cfg, job_id, "err", 50)
+            if not err_tail:
+                # Some failures only print to stdout (e.g. early Python errors).
+                err_tail = _fetch_log_tail(cfg, job_id, "out", 50)
+            if err_tail:
+                db.update_status(job_id, exp["status"], error_message=err_tail)
+                exp["error_message"] = err_tail
 
     return json.dumps(exp, indent=2, default=str)
 
@@ -212,6 +257,37 @@ def cancel(job_id: str) -> str:
         db.update_status(job_id, "CANCELLED")
 
     return f"Cancelled job {job_id}"
+
+
+@mcp.tool()
+def logs(job_id: str, stream: str = "both", tail: int = 200) -> str:
+    """Fetch SLURM stdout/stderr logs for a job.
+
+    Args:
+        job_id: SLURM job ID.
+        stream: 'out', 'err', or 'both' (default 'both').
+        tail: Number of trailing lines to return per stream (default 200).
+    """
+    if stream not in ("out", "err", "both"):
+        return f"Error: stream must be 'out', 'err', or 'both' (got {stream!r})"
+
+    try:
+        cfg, db = _load()
+    except Exception as e:
+        return f"Error: {e}"
+
+    with db:
+        exp = db.get_experiment(job_id)
+        if not exp:
+            return f"Job {job_id} not found in local database"
+
+    payload: dict[str, str | None] = {"job_id": job_id}
+    if stream in ("out", "both"):
+        payload["stdout"] = _fetch_log_tail(cfg, job_id, "out", tail)
+    if stream in ("err", "both"):
+        payload["stderr"] = _fetch_log_tail(cfg, job_id, "err", tail)
+
+    return json.dumps(payload, indent=2, default=str)
 
 
 @mcp.tool()
