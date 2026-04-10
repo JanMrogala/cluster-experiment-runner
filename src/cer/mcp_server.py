@@ -34,31 +34,26 @@ def _validate_commit(commit: str) -> str | None:
     return None
 
 
-def _build_run_command(cfg: CERConfig, worktree_dir: str, bind_flags: str) -> str:
-    """Build the command that runs the experiment. Uses Singularity if image is set."""
-    if cfg.container.image:
-        return (
-            f"singularity exec \\\n"
-            f"    --nv \\\n"
-            f"    --bind {worktree_dir} \\\n"
-            f"    {bind_flags} \\\n"
-            f"    --pwd {worktree_dir} \\\n"
-            f"    {cfg.container.image} \\\n"
-            f"    bash -c 'pip install -q -r requirements.txt 2>/dev/null; {cfg.experiment.entrypoint}'"
-        )
-    return cfg.experiment.entrypoint
-
-
 def _build_submit_script(cfg: CERConfig, commit: str) -> str:
     commit_short = commit[:8]
     base_dir = cfg.cluster.base_dir
     log_dir = f"{base_dir}/logs"
-    worktree_dir = f"{base_dir}/worktrees/{commit}"
+    sbatch_dir = f"{base_dir}/sbatch"
 
     extra_sbatch = "\n".join(f"#SBATCH {f}" for f in cfg.slurm.extra_flags)
     bind_flags = " ".join(f"--bind {m}" for m in cfg.container.bind_mounts)
-
     account_line = f"\n#SBATCH --account={cfg.slurm.account}" if cfg.slurm.account else ""
+
+    # The inner script runs inside Singularity: clone, checkout, install deps, run
+    inner_script = (
+        f"set -euo pipefail\\n"
+        f"WORK=$(mktemp -d)\\n"
+        f"git clone --single-branch --branch {cfg.cluster.repo_branch} {cfg.cluster.repo_url} \\$WORK\\n"
+        f"cd \\$WORK\\n"
+        f"git checkout {commit}\\n"
+        f"pip install -q -r requirements.txt 2>/dev/null || true\\n"
+        f"{cfg.experiment.entrypoint}\\n"
+    )
 
     sbatch_content = f"""#!/bin/bash
 #SBATCH --job-name=cer-{commit_short}
@@ -80,74 +75,27 @@ export WANDB_RUN_NAME="cer-{commit_short}"
 export WANDB_TAGS="{commit}"
 export CER_COMMIT="{commit}"
 
-cd "{worktree_dir}"
-
-{_build_run_command(cfg, worktree_dir, bind_flags)}
+singularity exec \\
+    --nv \\
+    --writable-tmpfs \\
+    {bind_flags} \\
+    {cfg.container.image} \\
+    bash -c "$(echo -e '{inner_script}')"
 """
 
     return f"""set -euo pipefail
 
 BASE_DIR="{base_dir}"
-REPO_URL="{cfg.cluster.repo_url}"
-COMMIT="{commit}"
-BRANCH="{cfg.cluster.repo_branch}"
-
-REPO_DIR="$BASE_DIR/repo"
-WORKTREE_DIR="$BASE_DIR/worktrees/$COMMIT"
 LOG_DIR="$BASE_DIR/logs"
+SBATCH_DIR="$BASE_DIR/sbatch"
 
-mkdir -p "$BASE_DIR" "$LOG_DIR"
+mkdir -p "$LOG_DIR" "$SBATCH_DIR"
 
-# Clone bare repo if not present
-if [ ! -e "$REPO_DIR/HEAD" ]; then
-    git clone --bare "$REPO_URL" "$REPO_DIR"
-fi
-
-# Fetch with retry until commit is available
-MAX_RETRIES=30
-RETRY_DELAY=10
-for i in $(seq 1 $MAX_RETRIES); do
-    git -C "$REPO_DIR" fetch origin "$BRANCH" --quiet 2>/dev/null || true
-    if git -C "$REPO_DIR" cat-file -t "$COMMIT" >/dev/null 2>&1; then
-        break
-    fi
-    if [ "$i" -eq "$MAX_RETRIES" ]; then
-        echo "ERROR: Commit $COMMIT not found after $MAX_RETRIES retries" >&2
-        exit 1
-    fi
-    sleep $RETRY_DELAY
-done
-
-# Create worktree (remove stale one if exists)
-if [ -d "$WORKTREE_DIR" ]; then
-    git -C "$REPO_DIR" worktree remove --force "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
-fi
-git -C "$REPO_DIR" worktree add --detach "$WORKTREE_DIR" "$COMMIT"
-
-# Auto-rebuild container if experiment.def changed
-CONTAINER_IMAGE="{cfg.container.image}"
-if [ -n "$CONTAINER_IMAGE" ] && [ -f "$WORKTREE_DIR/experiment.def" ]; then
-    CONTAINER_DIR=$(dirname "$CONTAINER_IMAGE")
-    CHECKSUM_FILE="$CONTAINER_DIR/experiment.def.md5"
-    NEW_CHECKSUM=$(md5sum "$WORKTREE_DIR/experiment.def" | cut -d' ' -f1)
-    OLD_CHECKSUM=""
-    if [ -f "$CHECKSUM_FILE" ]; then
-        OLD_CHECKSUM=$(cat "$CHECKSUM_FILE")
-    fi
-    if [ "$NEW_CHECKSUM" != "$OLD_CHECKSUM" ]; then
-        echo "experiment.def changed — rebuilding container..."
-        module load LUMI/23.09 partition/G systools/23.09 2>/dev/null || true
-        singularity build --force "$CONTAINER_IMAGE" "$WORKTREE_DIR/experiment.def"
-        echo "$NEW_CHECKSUM" > "$CHECKSUM_FILE"
-        echo "Container rebuilt."
-    fi
-fi
-
-# Write sbatch script
-cat > "$WORKTREE_DIR/_run.sbatch" << 'SBATCH_EOF'
+# Write and submit sbatch script
+cat > "$SBATCH_DIR/cer-{commit_short}.sbatch" << 'SBATCH_EOF'
 {sbatch_content}SBATCH_EOF
 
-sbatch "$WORKTREE_DIR/_run.sbatch"
+sbatch "$SBATCH_DIR/cer-{commit_short}.sbatch"
 """
 
 
