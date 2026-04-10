@@ -1,7 +1,7 @@
 cluster:
   host: "hostname"                           # SSH host (matches ~/.ssh/config)
   base_dir: "/scratch/project_465002631/user/experiments"  # Root directory on LUMI
-  repo_url: "git@github.com:user/repo.git"      # GitHub repo SSH URL
+  repo_url: "https://github.com/user/repo.git"   # HTTPS URL (compute nodes lack SSH keys)
   repo_branch: "main"                           # Branch to fetch
 
 container:
